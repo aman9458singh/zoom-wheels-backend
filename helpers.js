@@ -32,7 +32,7 @@ const sendEmail = async (subject, body, toEmails) => {
             from: 'salesmafiaonline@gmail.com',
             to: toEmails.join(', '),
             subject: subject,
-            text: `From: Arjan Motors\nSubject: ${subject}\n\n${body}`,
+            text: `From: Zoom Wheels\nSubject: ${subject}\n\n${body}`,
         };
 
         // Send the email

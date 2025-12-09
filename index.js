@@ -12,7 +12,9 @@ const app = express()
 const port = process.env.PORT || 5000
 
 // MongoDB
-const uri = `mongodb+srv://${process.env.SECRET_USER}:${process.env.SECRET_PASSWORD}@cluster0.dtgfo3e.mongodb.net/?retryWrites=true&w=majority`;
+const uri = `mongodb+srv://${process.env.DB_USERNAME}:${encodeURIComponent(
+  process.env.DB_PASSWORD
+)}@${process.env.DB_CLUSTER}/${process.env.DB_NAME}?retryWrites=true&w=majority&appName=${process.env.DB_APPNAME}`;
 const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
 
 // middlewares
@@ -38,15 +40,15 @@ function verifyJWT(req, res, next) {
 
 async function run() {
   try {
-    const usersCollection = client.db('arjanMotors').collection('users');
-    const brandsCollection = client.db('arjanMotors').collection('productBrands');
-    const brandsAndModel = client.db('arjanMotors').collection('brands-model');
-    const categoriesCollection = client.db('arjanMotors').collection('productCategories');
-    const productsCollection = client.db('arjanMotors').collection('products');
-    const blogsCollection = client.db('arjanMotors').collection('blogs');
-    const bookingCollection = client.db('arjanMotors').collection('booking');
-    const feedbacksCollection = client.db('arjanMotors').collection('feedbacks');
-    const paymentsCollection = client.db('arjanMotors').collection('payments');
+    const usersCollection = client.db('ZoomWheels').collection('users');
+    const brandsCollection = client.db('ZoomWheels').collection('productBrands');
+    const brandsAndModel = client.db('ZoomWheels').collection('brands-model');
+    const categoriesCollection = client.db('ZoomWheels').collection('productCategories');
+    const productsCollection = client.db('ZoomWheels').collection('products');
+    const blogsCollection = client.db('ZoomWheels').collection('blogs');
+    const bookingCollection = client.db('ZoomWheels').collection('booking');
+    const feedbacksCollection = client.db('ZoomWheels').collection('feedbacks');
+    const paymentsCollection = client.db('ZoomWheels').collection('payments');
 
     const verifyAdmin = async (req, res, next) => {
       const decodedUID = req.decoded.uid;
@@ -662,7 +664,7 @@ async function run() {
         const data = req.body;
 
         // Send acknowledgment email to the user
-        const acknowledgmentSubject = `${data.subject} | Arjan Motors`;
+        const acknowledgmentSubject = `${data.subject} | Zoom Wheels`;
         const acknowledgmentBody = `
 Dear ${data.fullName},
 Thank you for reaching out to us. We've received your inquiry :
@@ -670,8 +672,7 @@ Subject: '${data.subject}'.'${data.message}'.
 We will get back to you as soon as possible.
 Best regards,
 The Support Team,
-Arjan Motors
-https://arjanmotors.in
+Zoom Wheels
         `;
         await sendEmail(acknowledgmentSubject, acknowledgmentBody, [data.email]);
 
@@ -683,7 +684,7 @@ From: ${data.fullName} (${data.email}, ${data.contactNumber})\n
 Subject: ${data.subject}\n\n
 ${data.message}
         `;
-        const forwardRecipient = 'support@arjanmotors.com';
+        const forwardRecipient = 'support@zoomwheels.com';
         const { success } = await sendEmail(forwardSubject, forwardBody, [forwardRecipient]);
         console.log(success, 'axios.post')
         if (success) {
@@ -704,9 +705,9 @@ ${data.message}
 run().catch(err => console.error(err))
 
 app.get('/', (req, res) => {
-  res.send('Arjan Motors server is running...')
+  res.send('Zoom Wheels server is running...')
 })
 
 app.listen(port, () => {
-  console.log(`Arjan Motors listening on port ${port}`)
+  console.log(`Zoom Wheels listening on port ${port}`)
 })
