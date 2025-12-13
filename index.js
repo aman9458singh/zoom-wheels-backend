@@ -1,7 +1,9 @@
 const express = require('express')
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
+const multer = require('multer');
+const path = require('path');
 
-const { check, validationResult } = require('express-validator');
+const { check, validationResult, body } = require('express-validator');
 const cors = require('cors')
 const jwt = require('jsonwebtoken');
 const { buildQueryFromParams, validateContactUs, sendEmail } = require('./helpers');
@@ -15,11 +17,41 @@ const port = process.env.PORT || 5000
 const uri = `mongodb+srv://${process.env.DB_USERNAME}:${encodeURIComponent(
   process.env.DB_PASSWORD
 )}@${process.env.DB_CLUSTER}/${process.env.DB_NAME}?retryWrites=true&w=majority&appName=${process.env.DB_APPNAME}`;
-const client = new MongoClient(uri, { useNewUrlParser: true, useUnifiedTopology: true, serverApi: ServerApiVersion.v1 });
+// Mongo client options (TLS validation disabled to work around local cert issues)
+const mongoOptions = {
+  useNewUrlParser: true,
+  useUnifiedTopology: true,
+  serverApi: ServerApiVersion.v1,
+  tls: true,
+  tlsAllowInvalidCertificates: true
+};
+console.warn('MongoDB TLS cert validation disabled (tlsAllowInvalidCertificates=true)');
+const client = new MongoClient(uri, mongoOptions);
 
 // middlewares
 app.use(cors())
-app.use(express.json())
+// Increase body size limit to handle images from Add Vehicle form
+app.use(express.json({ limit: '20mb' }))
+app.use(express.urlencoded({ limit: '20mb', extended: true }))
+
+// Configure multer for file uploads
+const storage = multer.memoryStorage(); // Store files in memory as buffers
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024, // 5MB per file
+    files: 10 // Maximum 10 files
+  },
+  fileFilter: (req, file, cb) => {
+    // Accept only image files
+    const allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowedMimes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only JPEG, PNG, and WebP images are allowed.'), false);
+    }
+  }
+});
 
 function verifyJWT(req, res, next) {
   const authHeader = req.headers.authorization;
@@ -40,6 +72,19 @@ function verifyJWT(req, res, next) {
 
 async function run() {
   try {
+    // Ensure MongoDB client is connected before using collections
+    try {
+      const safeUri = uri.replace(/\/\/([^:]+):[^@]+@/, '//$1:***@');
+      console.log('Connecting to MongoDB', safeUri);
+      await client.connect();
+      // ping the database to confirm a successful connection
+      await client.db().command({ ping: 1 });
+      console.log('MongoDB connected successfully');
+    } catch (connErr) {
+      console.error('Failed to connect to MongoDB:', connErr.message || connErr);
+      // rethrow so the outer catch can handle it if needed
+      throw connErr;
+    }
     const usersCollection = client.db('ZoomWheels').collection('users');
     const brandsCollection = client.db('ZoomWheels').collection('productBrands');
     const brandsAndModel = client.db('ZoomWheels').collection('brands-model');
@@ -253,10 +298,106 @@ async function run() {
       res.send(products);
     })
 
-    app.post('/product', verifyJWT, async (req, res) => {
-      const product = req.body;
-      const result = await productsCollection.insertOne(product);
-      res.send(result);
+    // Validation middleware for product fields
+    const validateProduct = [
+      body('carBrand').trim().notEmpty().withMessage('Make is required').isLength({ max: 100 }).withMessage('Make must be less than 100 characters'),
+      body('carModel').trim().notEmpty().withMessage('Model is required').isLength({ max: 100 }).withMessage('Model must be less than 100 characters'),
+      body('price').isFloat({ min: 0 }).withMessage('Price must be a positive number'),
+      body('year').isInt({ min: 1900, max: new Date().getFullYear() + 1 }).withMessage(`Year must be between 1900 and ${new Date().getFullYear() + 1}`),
+      body('transmission').trim().notEmpty().withMessage('Transmission is required').isIn(['Manual', 'Automatic', 'CVT', 'DCT']).withMessage('Invalid transmission type'),
+      body('engineCC').optional().isInt({ min: 0, max: 10000 }).withMessage('Engine capacity must be between 0 and 10000 CC'),
+      body('wheels').optional().isInt({ min: 2, max: 10 }).withMessage('Number of wheels must be between 2 and 10'),
+      body('seats').optional().isInt({ min: 2, max: 50 }).withMessage('Number of seats must be between 2 and 50'),
+      body('kmDriven').isInt({ min: 0, max: 10000000 }).withMessage('KMS driven must be between 0 and 10,000,000'),
+      body('registrationState').trim().notEmpty().withMessage('Registration state is required').isLength({ max: 100 }).withMessage('Registration state must be less than 100 characters'),
+      body('exteriorColor').trim().notEmpty().withMessage('Exterior color is required').isLength({ max: 50 }).withMessage('Exterior color must be less than 50 characters'),
+      body('interiorColor').trim().notEmpty().withMessage('Interior color is required').isLength({ max: 50 }).withMessage('Interior color must be less than 50 characters'),
+      body('ownerSerial').trim().notEmpty().withMessage('Owner serial is required').isIn(['1st Owner', '2nd Owner', '3rd Owner', '4th+ Owner']).withMessage('Invalid owner serial'),
+      body('fuelType').trim().notEmpty().withMessage('Fuel type is required').isLength({ max: 50 }).withMessage('Fuel type must be less than 50 characters'),
+      body('bodyType').trim().notEmpty().withMessage('Body type is required').isLength({ max: 50 }).withMessage('Body type must be less than 50 characters'),
+      body('contactNumber').trim().notEmpty().withMessage('Contact number is required').matches(/^[0-9]{10}$/).withMessage('Contact number must be exactly 10 digits'),
+      body('keyFeatures').trim().notEmpty().withMessage('Key features are required').isLength({ max: 1000 }).withMessage('Key features must be less than 1000 characters'),
+      body('description').optional().isLength({ max: 5000 }).withMessage('Description must be less than 5000 characters'),
+    ];
+
+    // Product creation endpoint with file upload and validation
+    app.post('/product', upload.array('images', 10), validateProduct, async (req, res) => {
+      try {
+        // Check validation errors
+        const errors = validationResult(req);
+        if (!errors.isEmpty()) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'Validation failed', 
+            errors: errors.array() 
+          });
+        }
+
+        // Check if at least one image is uploaded
+        if (!req.files || req.files.length === 0) {
+          return res.status(400).json({ 
+            success: false, 
+            message: 'At least one image is required' 
+          });
+        }
+
+        // Convert images to base64 strings
+        const images = req.files.map(file => {
+          const base64 = file.buffer.toString('base64');
+          const mimeType = file.mimetype;
+          return `data:${mimeType};base64,${base64}`;
+        });
+
+        // Get user info from request (if available)
+        const sellerId = req.body.sellerId || 'unknown';
+        const sellerName = req.body.sellerName || 'Admin';
+
+        // Build product object with validated data
+        const product = {
+          carBrand: req.body.carBrand.trim(),
+          carModel: req.body.carModel.trim(),
+          price: parseFloat(req.body.price),
+          year: parseInt(req.body.year),
+          transmission: req.body.transmission.trim(),
+          engineCC: req.body.engineCC ? parseInt(req.body.engineCC) : null,
+          wheels: req.body.wheels ? parseInt(req.body.wheels) : 4,
+          seats: req.body.seats ? parseInt(req.body.seats) : 5,
+          kmDriven: parseInt(req.body.kmDriven),
+          registrationState: req.body.registrationState.trim(),
+          exteriorColor: req.body.exteriorColor.trim(),
+          interiorColor: req.body.interiorColor.trim(),
+          ownerSerial: req.body.ownerSerial.trim(),
+          fuelType: req.body.fuelType.trim(),
+          bodyType: req.body.bodyType.trim(),
+          contactNumber: req.body.contactNumber.trim(),
+          keyFeatures: req.body.keyFeatures.trim(),
+          description: req.body.description ? req.body.description.trim() : '',
+          images: images,
+          sellerId: sellerId,
+          sellerName: sellerName,
+          addDate: new Date(),
+          timestamp: new Date().getTime(),
+          sellStatus: true,
+          reportStatus: false,
+          adsStatus: 'no'
+        };
+
+        // Insert product into database
+        const result = await productsCollection.insertOne(product);
+        
+        res.status(201).json({ 
+          success: true, 
+          message: 'Vehicle added successfully',
+          productId: result.insertedId 
+        });
+      } catch (error) {
+        console.error('Error adding product:', error);
+        res.status(500).json({ 
+          success: false, 
+          message: 'Internal server error',
+          error: error.message 
+        });
+      }
     });
 
     app.put('/product/:id', verifyJWT, async (req, res) => {
@@ -697,12 +838,25 @@ ${data.message}
         return res.status(500).json({ success: false, error: error.message });
       }
     });
+
+    // Lightweight endpoint to check DB connection status
+    app.get('/db-status', async (req, res) => {
+      try {
+        await client.db().command({ ping: 1 });
+        return res.json({ connected: true, message: 'MongoDB ping successful' });
+      } catch (err) {
+        return res.status(500).json({ connected: false, error: err.message || String(err) });
+      }
+    });
   }
   finally {
 
   }
 }
-run().catch(err => console.error(err))
+run().catch(err => {
+  console.error(err);
+  process.exit(1);
+})
 
 app.get('/', (req, res) => {
   res.send('Zoom Wheels server is running...')
